@@ -25,86 +25,146 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // Get products from the "Produtos e Serviços" table
 async function getProducts() {
   try {
-    // First, navigate to the "Produtos e Serviços" tab
-    await clickTab('Produtos e Serviços');
-    await waitForElement('table', 2000);
+    console.log('SEFAZ Editor - Starting product detection...');
     
     const products = [];
     
-    // Find the products table
-    // The table structure from the screenshots shows rows with: #, Código, Descrição, NCM, CFOP, Unid., Qtd., V. Unit., V. Total, etc.
-    const tables = document.querySelectorAll('table');
+    // Strategy 1: Look for product links (description links like REFEIÇÕES, CAFÉS)
+    // These are typically <a> tags with href containing javascript or # 
+    const allLinks = document.querySelectorAll('a');
+    console.log('SEFAZ Editor - Found links:', allLinks.length);
     
-    for (const table of tables) {
-      const rows = table.querySelectorAll('tr');
+    allLinks.forEach((link, index) => {
+      const text = link.textContent.trim();
+      const href = link.getAttribute('href') || '';
       
-      for (let i = 0; i < rows.length; i++) {
-        const row = rows[i];
-        const cells = row.querySelectorAll('td');
+      // Check if this looks like a product description link
+      // Product names are usually uppercase letters, accented characters, and spaces
+      if (text && text.length >= 2 && 
+          text.match(/^[A-ZÀ-Úa-zà-ú\s\-\.]+$/) && 
+          !text.match(/^(Incluir|Editar|Excluir|Selecionar|Salvar|Fechar|Validar|Total|Download|Compras)$/i)) {
         
-        // Check if this is a product row (has checkbox in first cell)
-        if (cells.length >= 9) {
-          const checkbox = cells[0]?.querySelector('input[type="checkbox"]');
-          const numberCell = cells[0]?.textContent?.trim() || cells[1]?.textContent?.trim();
+        const row = link.closest('tr');
+        if (row) {
+          const cells = row.querySelectorAll('td');
           
-          // Try to identify product rows by checking for product data
-          const codeCell = cells[1]?.textContent?.trim() || '';
-          const descriptionCell = cells[2]?.textContent?.trim() || '';
-          const qtyCell = cells[6]?.textContent?.trim() || '';
-          const unitValueCell = cells[7]?.textContent?.trim() || '';
-          const totalValueCell = cells[8]?.textContent?.trim() || '';
-          
-          // If this looks like a product row
-          if (codeCell && descriptionCell && !descriptionCell.includes('Descrição')) {
-            products.push({
-              index: products.length,
-              rowIndex: i,
-              code: codeCell,
-              description: descriptionCell,
-              currentQty: qtyCell.replace(',', '.'),
-              unitValue: unitValueCell,
-              totalValue: totalValueCell,
-              newQty: ''
+          if (cells.length >= 4) {
+            // Find the cell index of the link
+            let linkCellIndex = -1;
+            cells.forEach((cell, i) => {
+              if (cell.contains(link)) linkCellIndex = i;
             });
+            
+            // Extract data based on typical SEFAZ table structure
+            // Structure: checkbox | # | Código | Descrição | NCM | CFOP | Unid. | Qtd. | V.Unit | V.Total | ...
+            const cellTexts = Array.from(cells).map(c => c.textContent.trim());
+            
+            // Find code (4 digits like 0001, 0002)
+            let code = '';
+            let description = text;
+            let qty = '';
+            let unitValue = '';
+            let totalValue = '';
+            
+            cellTexts.forEach((cellText, i) => {
+              // Code is usually 4 digits
+              if (cellText.match(/^\d{4}$/) && !code) {
+                code = cellText;
+              }
+              // Quantity has decimal with comma (like 88,0000)
+              if (cellText.match(/^\d+,\d{4}$/) && !qty) {
+                qty = cellText;
+              }
+              // Unit value (like 23,00 or 23,0000)
+              if (cellText.match(/^\d+,\d{2,4}$/) && !unitValue && qty) {
+                unitValue = cellText;
+              }
+              // Total value (like 2.024,00)
+              if (cellText.match(/^[\d\.]+,\d{2}$/) && !totalValue) {
+                totalValue = cellText;
+              }
+            });
+            
+            // Only add if we found a valid product (has code and description)
+            if (code && description && !products.find(p => p.code === code)) {
+              products.push({
+                index: products.length,
+                rowIndex: index,
+                code: code,
+                description: description,
+                currentQty: qty,
+                unitValue: unitValue,
+                totalValue: totalValue,
+                newQty: ''
+              });
+              console.log('SEFAZ Editor - Found product:', code, description);
+            }
           }
         }
       }
-    }
+    });
     
-    // Alternative approach: look for specific elements by class or ID
+    // Strategy 2: If no products found, try scanning all table rows
     if (products.length === 0) {
-      // Try to find grid/table with specific SEFAZ classes
-      const gridRows = document.querySelectorAll('[class*="grid"] tr, [class*="Grid"] tr, [id*="grid"] tr, [id*="Grid"] tr');
+      console.log('SEFAZ Editor - Trying table scan strategy...');
       
-      gridRows.forEach((row, index) => {
-        const cells = row.querySelectorAll('td');
-        if (cells.length >= 5) {
-          const text = row.textContent;
-          // Look for typical product patterns
-          if (text.match(/\d{4,}/) && !text.includes('Código')) {
+      const tables = document.querySelectorAll('table');
+      
+      tables.forEach(table => {
+        const rows = table.querySelectorAll('tr');
+        
+        rows.forEach((row, rowIndex) => {
+          const cells = row.querySelectorAll('td');
+          
+          // Need at least 4 columns for a product row
+          if (cells.length >= 4) {
             const cellTexts = Array.from(cells).map(c => c.textContent.trim());
+            const rowText = cellTexts.join(' ');
             
-            // Find the description (usually the longest text or after code)
-            let code = '', description = '', qty = '', unitValue = '', totalValue = '';
+            // Skip header rows
+            if (rowText.includes('Descrição') && rowText.includes('Código')) return;
+            if (rowText.includes('Linhas:')) return;
+            
+            // Look for rows with a 4-digit code
+            let code = '';
+            let description = '';
+            let qty = '';
+            let unitValue = '';
+            let totalValue = '';
             
             cellTexts.forEach((text, i) => {
+              // 4-digit code
               if (text.match(/^\d{4}$/) && !code) {
                 code = text;
-              } else if (text.length > 3 && text.match(/^[A-ZÀ-Ú\s]+$/i) && !description) {
-                description = text;
-              } else if (text.match(/^\d+[,.]?\d*$/) && !qty) {
+              }
+              // Description - text with letters (check the cell after code or containing link)
+              if (!description) {
+                const cell = cells[i];
+                const link = cell?.querySelector('a');
+                if (link) {
+                  description = link.textContent.trim();
+                } else if (text.match(/^[A-ZÀ-Úa-zà-ú\s\-\.]+$/) && text.length > 2 && code) {
+                  description = text;
+                }
+              }
+              // Qty with 4 decimals
+              if (text.match(/^\d+,\d{4}$/) && !qty) {
                 qty = text;
-              } else if (text.match(/^\d+[,.]\d{2,4}$/) && !unitValue) {
+              }
+              // Unit value
+              if (text.match(/^\d+,\d{2,4}$/) && qty && !unitValue) {
                 unitValue = text;
-              } else if (text.match(/^\d+[,.]\d{2}$/) && !totalValue) {
+              }
+              // Total value with thousands separator
+              if (text.match(/^[\d\.]+,\d{2}$/) && !totalValue) {
                 totalValue = text;
               }
             });
             
-            if (code && description) {
+            if (code && description && !products.find(p => p.code === code)) {
               products.push({
                 index: products.length,
-                rowIndex: index,
+                rowIndex: rowIndex,
                 code,
                 description,
                 currentQty: qty,
@@ -112,40 +172,55 @@ async function getProducts() {
                 totalValue,
                 newQty: ''
               });
+              console.log('SEFAZ Editor - Found product (table scan):', code, description);
             }
           }
-        }
+        });
       });
     }
     
-    // Final fallback: look for links that might be product descriptions
+    // Strategy 3: Look for specific SEFAZ grid elements
     if (products.length === 0) {
-      const productLinks = document.querySelectorAll('a[href*="javascript"]');
+      console.log('SEFAZ Editor - Trying grid elements strategy...');
       
-      productLinks.forEach((link, index) => {
-        const text = link.textContent.trim();
-        if (text && text.length > 2 && text.match(/^[A-ZÀ-Ú\s]+$/i)) {
-          const row = link.closest('tr');
-          if (row) {
-            const cells = row.querySelectorAll('td');
+      // SEFAZ might use specific IDs or classes
+      const gridElements = document.querySelectorAll('[id*="grd"], [id*="Grid"], [class*="grid"], [class*="Grid"]');
+      
+      gridElements.forEach(grid => {
+        const rows = grid.querySelectorAll('tr');
+        rows.forEach((row, rowIndex) => {
+          const cells = row.querySelectorAll('td');
+          if (cells.length >= 3) {
             const cellTexts = Array.from(cells).map(c => c.textContent.trim());
             
-            products.push({
-              index: products.length,
-              rowIndex: index,
-              code: cellTexts[1] || '',
-              description: text,
-              currentQty: cellTexts[6] || '',
-              unitValue: cellTexts[7] || '',
-              totalValue: cellTexts[8] || '',
-              newQty: ''
-            });
+            // Find 4-digit code and description
+            let code = cellTexts.find(t => t.match(/^\d{4}$/));
+            let description = '';
+            
+            // Find link text for description
+            const link = row.querySelector('a');
+            if (link) description = link.textContent.trim();
+            
+            if (code && description && !products.find(p => p.code === code)) {
+              products.push({
+                index: products.length,
+                rowIndex: rowIndex,
+                code,
+                description,
+                currentQty: '',
+                unitValue: '',
+                totalValue: '',
+                newQty: ''
+              });
+            }
           }
-        }
+        });
       });
     }
     
-    console.log('SEFAZ Editor - Products found:', products);
+    console.log('SEFAZ Editor - Total products found:', products.length);
+    console.log('SEFAZ Editor - Products:', products);
+    
     return { success: true, products };
     
   } catch (error) {

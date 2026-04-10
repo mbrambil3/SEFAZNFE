@@ -2,9 +2,6 @@
 const statusBadge = document.getElementById('statusBadge');
 const warningBox = document.getElementById('warningBox');
 const mainContent = document.getElementById('mainContent');
-const dateStart = document.getElementById('dateStart');
-const dateEnd = document.getElementById('dateEnd');
-const datePreviewText = document.getElementById('datePreviewText');
 const productsLoading = document.getElementById('productsLoading');
 const productsEmpty = document.getElementById('productsEmpty');
 const productsList = document.getElementById('productsList');
@@ -76,30 +73,22 @@ async function loadProducts() {
   productsList.style.display = 'none';
   
   try {
-    // Get all frames in the tab
     const frames = await chrome.webNavigation.getAllFrames({ tabId: currentTabId });
-    console.log('Found frames:', frames?.length || 0);
-    
     let allProducts = [];
     
-    // Try to get products from each frame
     if (frames && frames.length > 0) {
       for (const frame of frames) {
         try {
           const response = await chrome.tabs.sendMessage(currentTabId, { action: 'getProducts' }, { frameId: frame.frameId });
-          console.log('Frame', frame.frameId, 'response:', response);
-          
           if (response && response.products && response.products.length > 0) {
             allProducts = [...allProducts, ...response.products];
           }
         } catch (e) {
-          // Frame might not have content script or be inaccessible
-          console.log('Frame', frame.frameId, 'error:', e.message);
+          // Frame might not have content script
         }
       }
     }
     
-    // Fallback: try sending to main frame only
     if (allProducts.length === 0) {
       try {
         const response = await chrome.tabs.sendMessage(currentTabId, { action: 'getProducts' });
@@ -112,15 +101,12 @@ async function loadProducts() {
     }
     
     if (allProducts.length > 0) {
-      // Remove duplicates based on code
       const seen = new Set();
       products = allProducts.filter(p => {
         if (seen.has(p.code)) return false;
         seen.add(p.code);
         return true;
       });
-      
-      // Re-index products
       products.forEach((p, i) => p.index = i);
       
       renderProducts();
@@ -143,13 +129,12 @@ function renderProducts() {
   
   products.forEach((product, index) => {
     const item = document.createElement('div');
-    item.className = 'product-item fade-in';
-    item.style.animationDelay = `${index * 0.05}s`;
+    item.className = 'product-item';
     
     item.innerHTML = `
       <div class="product-info">
         <div class="product-name" title="${product.description}">${product.description}</div>
-        <div class="product-details">Código: ${product.code} | V. Unit: R$ ${product.unitValue}</div>
+        <div class="product-details">Cód: ${product.code} | V.U: ${product.unitValue || '-'}</div>
       </div>
       <input 
         type="text" 
@@ -164,7 +149,6 @@ function renderProducts() {
     productsList.appendChild(item);
   });
   
-  // Add event listeners to quantity inputs
   document.querySelectorAll('.product-qty-input').forEach(input => {
     input.addEventListener('input', handleQtyInput);
   });
@@ -181,32 +165,10 @@ function handleQtyInput(e) {
   updateExecuteButton();
 }
 
-// Update date preview
-function updateDatePreview() {
-  const start = dateStart.value || '__/__';
-  const end = dateEnd.value || '__/__';
-  datePreviewText.textContent = `De ${start} a ${end}`;
-  updateExecuteButton();
-}
-
-// Format date input (DD/MM)
-function formatDateInput(input) {
-  let value = input.value.replace(/\D/g, '');
-  
-  if (value.length >= 2) {
-    value = value.slice(0, 2) + '/' + value.slice(2, 4);
-  }
-  
-  input.value = value;
-  updateDatePreview();
-}
-
 // Update execute button state
 function updateExecuteButton() {
-  const hasValidDates = dateStart.value.length === 5 && dateEnd.value.length === 5;
   const hasQuantities = products.some(p => p.newQty && p.newQty.length > 0);
-  
-  executeBtn.disabled = !hasValidDates || !hasQuantities;
+  executeBtn.disabled = !hasQuantities;
 }
 
 // Helper function to send message to all frames
@@ -225,7 +187,6 @@ async function sendMessageToAllFrames(message) {
       }
     }
     
-    // Fallback to main frame
     return await chrome.tabs.sendMessage(currentTabId, message);
   } catch (error) {
     console.error('Error sending message to frames:', error);
@@ -233,7 +194,7 @@ async function sendMessageToAllFrames(message) {
   }
 }
 
-// Execute the automation
+// Execute the automation (only product editing, no date)
 async function executeAutomation() {
   if (!isConnected) return;
   
@@ -242,51 +203,44 @@ async function executeAutomation() {
   progressFill.style.width = '0%';
   progressText.textContent = 'Iniciando...';
   
-  const dateRange = `De ${dateStart.value} a ${dateEnd.value}`;
   const productsToEdit = products.filter(p => p.newQty && p.newQty.length > 0);
-  const totalSteps = productsToEdit.length + 1; // +1 for date update
+  const totalSteps = productsToEdit.length;
   let currentStep = 0;
   
   try {
-    // Step 1: Update date range in Observação tab
-    progressText.textContent = 'Atualizando intervalo de datas...';
-    await sendMessageToAllFrames({ 
-      action: 'updateDateRange', 
-      dateRange: dateRange 
-    });
-    currentStep++;
-    progressFill.style.width = `${(currentStep / totalSteps) * 100}%`;
-    
-    // Step 2: Edit each product
+    // Edit each product
     for (const product of productsToEdit) {
       progressText.textContent = `Editando: ${product.description}...`;
       
-      await sendMessageToAllFrames({
+      const result = await sendMessageToAllFrames({
         action: 'editProduct',
         productIndex: product.index,
         newQty: product.newQty
       });
       
+      if (!result.success) {
+        throw new Error(result.error || 'Erro ao editar produto');
+      }
+      
       currentStep++;
       progressFill.style.width = `${(currentStep / totalSteps) * 100}%`;
       
-      // Small delay between products
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Delay between products
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
     
-    // Step 3: Get total value
+    // Get total value
     progressText.textContent = 'Calculando valor total...';
     const response = await sendMessageToAllFrames({ action: 'getTotalValue' });
     
     progressFill.style.width = '100%';
     progressText.textContent = 'Concluído!';
     
-    // Show result
     setTimeout(() => {
       resultSection.style.display = 'block';
-      resultSection.classList.add('fade-in');
       totalValue.textContent = `R$ ${response.totalValue || '0,00'}`;
       progressContainer.style.display = 'none';
+      executeBtn.disabled = false;
     }, 500);
     
   } catch (error) {
@@ -305,7 +259,7 @@ async function copyTotal() {
     await navigator.clipboard.writeText(value);
     copyTotalBtn.classList.add('copied');
     copyTotalBtn.innerHTML = `
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
         <path d="M5 13L9 17L19 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
       Copiado!
@@ -314,7 +268,7 @@ async function copyTotal() {
     setTimeout(() => {
       copyTotalBtn.classList.remove('copied');
       copyTotalBtn.innerHTML = `
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M8 5H6C4.89543 5 4 5.89543 4 7V19C4 20.1046 4.89543 21 6 21H16C17.1046 21 18 20.1046 18 19V18M8 5C8 6.10457 8.89543 7 10 7H12C13.1046 7 14 6.10457 14 5M8 5C8 3.89543 8.89543 3 10 3H12C13.1046 3 14 3.89543 14 5M14 5H16C17.1046 5 18 5.89543 18 7V10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
         Copiar Valor
@@ -327,8 +281,6 @@ async function copyTotal() {
 
 // Setup event listeners
 function setupEventListeners() {
-  dateStart.addEventListener('input', () => formatDateInput(dateStart));
-  dateEnd.addEventListener('input', () => formatDateInput(dateEnd));
   refreshProducts.addEventListener('click', loadProducts);
   executeBtn.addEventListener('click', executeAutomation);
   copyTotalBtn.addEventListener('click', copyTotal);

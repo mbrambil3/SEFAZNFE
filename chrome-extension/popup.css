@@ -30,6 +30,8 @@ body {
   background: var(--bg-primary);
   color: var(--text-primary);
   width: 360px;
+  min-width: 360px;
+  max-width: 360px;
   min-height: 480px;
   overflow-x: hidden;
 }
@@ -38,6 +40,9 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 100%;
+  width: 360px;
+  max-width: 360px;
+  overflow-x: hidden;
 }
 
 /* Header */

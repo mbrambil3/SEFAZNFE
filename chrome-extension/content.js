@@ -325,108 +325,188 @@ async function updateDateRange(dateRange) {
   }
 }
 
-// Edit a product's quantity
+// Edit a product's quantity - CORRECT FLOW
 async function editProduct(productIndex, newQty) {
   try {
-    // Navigate to "Produtos e Serviços" tab
-    await clickTab('Produtos e Serviços');
-    await sleep(500);
+    console.log('SEFAZ Editor - Starting edit for product index:', productIndex, 'new qty:', newQty);
     
-    // Find and select the product row
-    const tables = document.querySelectorAll('table');
-    let productRow = null;
-    let productFound = false;
+    // Step 1: Find all checkboxes and uncheck them first
+    const allCheckboxes = document.querySelectorAll('input[type="checkbox"]');
+    console.log('SEFAZ Editor - Found checkboxes:', allCheckboxes.length);
     
-    for (const table of tables) {
-      const rows = table.querySelectorAll('tr');
-      let dataRowIndex = 0;
-      
-      for (const row of rows) {
-        const cells = row.querySelectorAll('td');
-        if (cells.length >= 5) {
-          // Check if this is a data row (not header)
-          const firstCellText = cells[0]?.textContent?.trim() || '';
-          const hasCheckbox = cells[0]?.querySelector('input[type="checkbox"]');
-          
-          if (hasCheckbox || firstCellText.match(/^\d+$/)) {
-            if (dataRowIndex === productIndex) {
-              productRow = row;
-              productFound = true;
-              break;
-            }
-            dataRowIndex++;
-          }
-        }
+    allCheckboxes.forEach(cb => {
+      if (cb.checked) {
+        cb.checked = false;
+        cb.dispatchEvent(new Event('change', { bubbles: true }));
+        cb.dispatchEvent(new Event('click', { bubbles: true }));
       }
-      
-      if (productFound) break;
-    }
-    
-    if (!productRow) {
-      throw new Error(`Produto índice ${productIndex} não encontrado`);
-    }
-    
-    // Select the product (click checkbox or row)
-    const checkbox = productRow.querySelector('input[type="checkbox"]');
-    if (checkbox) {
-      checkbox.checked = true;
-      checkbox.dispatchEvent(new Event('change', { bubbles: true }));
-      checkbox.dispatchEvent(new Event('click', { bubbles: true }));
-    } else {
-      // Click the row to select
-      productRow.click();
-    }
+    });
     
     await sleep(300);
     
-    // Click the "Editar" button
-    const editButton = findButtonByText('Editar') || 
-                       document.querySelector('[value="Editar"], [title="Editar"], button:contains("Editar"), input[type="button"][value*="Editar"]');
+    // Step 2: Find the product row and its checkbox
+    const tables = document.querySelectorAll('table');
+    let targetCheckbox = null;
+    let productRow = null;
+    let dataRowCount = 0;
     
-    if (editButton) {
-      editButton.click();
-      await sleep(1000); // Wait for edit modal/form to open
-    } else {
-      // Try double-clicking the row to edit
-      const dblClickEvent = new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window });
-      productRow.dispatchEvent(dblClickEvent);
-      await sleep(1000);
-    }
-    
-    // Find and update the "Qtd. Comercial" field
-    const qtyInput = findInputByLabel('Qtd. Comercial') || 
-                     findInputByLabel('Qtd Comercial') ||
-                     findInputByLabel('Quantidade') ||
-                     document.querySelector('input[name*="qtd" i], input[name*="quantidade" i], input[id*="qtd" i]');
-    
-    if (qtyInput) {
-      qtyInput.focus();
-      qtyInput.value = '';
-      qtyInput.value = newQty.replace('.', ','); // Use comma for decimal in Brazilian format
+    for (const table of tables) {
+      const rows = table.querySelectorAll('tr');
       
-      // Trigger events
-      qtyInput.dispatchEvent(new Event('input', { bubbles: true }));
-      qtyInput.dispatchEvent(new Event('change', { bubbles: true }));
-      qtyInput.dispatchEvent(new Event('blur', { bubbles: true }));
-      
-      await sleep(300);
-    } else {
-      throw new Error('Campo de quantidade não encontrado');
+      for (const row of rows) {
+        const cells = row.querySelectorAll('td');
+        if (cells.length >= 4) {
+          // Check if this row has a checkbox (product row)
+          const checkbox = row.querySelector('input[type="checkbox"]');
+          if (checkbox) {
+            // Check if row contains product data (has a 4-digit code)
+            const rowText = row.textContent;
+            if (rowText.match(/\d{4}/) && !rowText.includes('Código')) {
+              if (dataRowCount === productIndex) {
+                targetCheckbox = checkbox;
+                productRow = row;
+                console.log('SEFAZ Editor - Found target product row:', rowText.substring(0, 50));
+                break;
+              }
+              dataRowCount++;
+            }
+          }
+        }
+      }
+      if (targetCheckbox) break;
     }
     
-    // Click "Salvar Item" button
-    const saveButton = findButtonByText('Salvar Item') || 
-                       findButtonByText('Salvar') ||
-                       document.querySelector('[value*="Salvar"], [title*="Salvar"], button:contains("Salvar")');
-    
-    if (saveButton) {
-      saveButton.click();
-      await sleep(1000); // Wait for save to complete
-    } else {
-      throw new Error('Botão Salvar não encontrado');
+    if (!targetCheckbox) {
+      throw new Error(`Produto índice ${productIndex} não encontrado`);
     }
     
-    console.log(`SEFAZ Editor - Product ${productIndex} updated to qty: ${newQty}`);
+    // Step 3: Check ONLY this product's checkbox
+    targetCheckbox.checked = true;
+    targetCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+    targetCheckbox.dispatchEvent(new Event('click', { bubbles: true }));
+    targetCheckbox.focus();
+    
+    console.log('SEFAZ Editor - Checkbox selected');
+    await sleep(500);
+    
+    // Step 4: Click the "Editar" button
+    const editButton = findButtonByText('Editar');
+    if (!editButton) {
+      throw new Error('Botão Editar não encontrado');
+    }
+    
+    console.log('SEFAZ Editor - Clicking Editar button');
+    editButton.click();
+    
+    // Step 5: Wait 1 second for edit panel to open
+    await sleep(1500);
+    
+    // Step 6: Find and fill the "Qtd. Comercial" field
+    // The field is an input next to a label containing "Qtd. Comercial" or "Qtd Comercial"
+    let qtyInput = null;
+    
+    // Strategy 1: Find by looking for label text
+    const allLabels = document.querySelectorAll('td, span, label');
+    for (const label of allLabels) {
+      const text = label.textContent.trim();
+      if (text.includes('Qtd. Comercial') || text.includes('Qtd Comercial') || text === '*Qtd. Comercial:') {
+        // Look for input in the same row or next element
+        const parent = label.closest('tr') || label.parentElement;
+        if (parent) {
+          const inputs = parent.querySelectorAll('input[type="text"], input:not([type])');
+          for (const input of inputs) {
+            // Check if this input contains a decimal number (quantity format)
+            if (input.value && input.value.match(/^\d+[,\.]\d+$/) || !input.readOnly) {
+              qtyInput = input;
+              console.log('SEFAZ Editor - Found qty input via label, current value:', input.value);
+              break;
+            }
+          }
+        }
+        if (qtyInput) break;
+      }
+    }
+    
+    // Strategy 2: Find input by value pattern (decimal with 4 places like 88,0000)
+    if (!qtyInput) {
+      const allInputs = document.querySelectorAll('input[type="text"], input:not([type])');
+      for (const input of allInputs) {
+        if (input.value && input.value.match(/^\d+,\d{4}$/)) {
+          qtyInput = input;
+          console.log('SEFAZ Editor - Found qty input by pattern, value:', input.value);
+          break;
+        }
+      }
+    }
+    
+    // Strategy 3: Find input near "Qtd" text in the DOM
+    if (!qtyInput) {
+      const bodyText = document.body.innerHTML;
+      const qtdMatch = bodyText.match(/Qtd\.?\s*Comercial.*?<input[^>]*>/i);
+      if (qtdMatch) {
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = qtdMatch[0];
+        const foundInput = tempDiv.querySelector('input');
+        if (foundInput && foundInput.name) {
+          qtyInput = document.querySelector(`input[name="${foundInput.name}"]`);
+        }
+      }
+    }
+    
+    if (!qtyInput) {
+      throw new Error('Campo Qtd. Comercial não encontrado');
+    }
+    
+    // Step 7: Clear and fill the quantity field
+    qtyInput.focus();
+    qtyInput.select();
+    
+    // Clear the field
+    qtyInput.value = '';
+    
+    // Format quantity with 4 decimal places (Brazilian format)
+    let formattedQty = newQty.replace('.', ',');
+    if (!formattedQty.includes(',')) {
+      formattedQty = formattedQty + ',0000';
+    } else {
+      // Ensure 4 decimal places
+      const parts = formattedQty.split(',');
+      formattedQty = parts[0] + ',' + (parts[1] || '').padEnd(4, '0').substring(0, 4);
+    }
+    
+    qtyInput.value = formattedQty;
+    
+    // Trigger all relevant events
+    qtyInput.dispatchEvent(new Event('input', { bubbles: true }));
+    qtyInput.dispatchEvent(new Event('change', { bubbles: true }));
+    qtyInput.dispatchEvent(new Event('blur', { bubbles: true }));
+    qtyInput.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+    
+    console.log('SEFAZ Editor - Quantity set to:', formattedQty);
+    await sleep(500);
+    
+    // Step 8: Click "Salvar Item" button
+    const saveButton = findButtonByText('Salvar Item') || findButtonByText('Salvar');
+    if (!saveButton) {
+      throw new Error('Botão Salvar Item não encontrado');
+    }
+    
+    console.log('SEFAZ Editor - Clicking Salvar Item button');
+    saveButton.click();
+    
+    // Step 9: Wait for save to complete
+    await sleep(1500);
+    
+    // Step 10: Uncheck the checkbox
+    if (targetCheckbox.checked) {
+      targetCheckbox.checked = false;
+      targetCheckbox.dispatchEvent(new Event('change', { bubbles: true }));
+      targetCheckbox.dispatchEvent(new Event('click', { bubbles: true }));
+    }
+    
+    console.log('SEFAZ Editor - Product', productIndex, 'edited successfully');
+    await sleep(500);
+    
     return { success: true };
     
   } catch (error) {
@@ -503,24 +583,70 @@ async function clickTab(tabText) {
   return false;
 }
 
-// Helper function: Find button by text
+// Helper function: Find button by text (improved)
 function findButtonByText(text) {
-  const buttons = document.querySelectorAll('button, input[type="button"], input[type="submit"], a.button, [role="button"]');
-  
-  for (const button of buttons) {
-    const buttonText = button.textContent?.trim() || button.value || button.title || '';
-    if (buttonText.includes(text)) {
-      return button;
+  // Strategy 1: Input buttons with value
+  const inputButtons = document.querySelectorAll('input[type="button"], input[type="submit"]');
+  for (const btn of inputButtons) {
+    if (btn.value && btn.value.includes(text)) {
+      console.log('SEFAZ Editor - Found button by input value:', btn.value);
+      return btn;
     }
   }
   
-  // Also check images with alt text
-  const images = document.querySelectorAll('img[alt*="' + text + '"], img[title*="' + text + '"]');
-  for (const img of images) {
-    const parent = img.closest('a, button, [onclick]');
-    if (parent) return parent;
+  // Strategy 2: Regular buttons
+  const buttons = document.querySelectorAll('button');
+  for (const btn of buttons) {
+    if (btn.textContent && btn.textContent.includes(text)) {
+      console.log('SEFAZ Editor - Found button by text:', btn.textContent);
+      return btn;
+    }
   }
   
+  // Strategy 3: Links styled as buttons
+  const links = document.querySelectorAll('a');
+  for (const link of links) {
+    if (link.textContent && link.textContent.includes(text)) {
+      console.log('SEFAZ Editor - Found link button:', link.textContent);
+      return link;
+    }
+  }
+  
+  // Strategy 4: Images with alt or title
+  const images = document.querySelectorAll('img');
+  for (const img of images) {
+    if ((img.alt && img.alt.includes(text)) || (img.title && img.title.includes(text))) {
+      const parent = img.closest('a, button, [onclick], td[onclick], span[onclick]');
+      if (parent) {
+        console.log('SEFAZ Editor - Found image button:', img.alt || img.title);
+        return parent;
+      }
+      return img;
+    }
+  }
+  
+  // Strategy 5: Elements with onclick containing the text
+  const allElements = document.querySelectorAll('[onclick]');
+  for (const el of allElements) {
+    if (el.textContent && el.textContent.includes(text)) {
+      console.log('SEFAZ Editor - Found onclick element:', el.textContent.substring(0, 30));
+      return el;
+    }
+  }
+  
+  // Strategy 6: TD elements that look like buttons
+  const tds = document.querySelectorAll('td');
+  for (const td of tds) {
+    if (td.textContent && td.textContent.trim() === text) {
+      const clickable = td.querySelector('[onclick]') || td;
+      if (td.onclick || td.getAttribute('onclick')) {
+        console.log('SEFAZ Editor - Found TD button:', td.textContent);
+        return td;
+      }
+    }
+  }
+  
+  console.log('SEFAZ Editor - Button not found:', text);
   return null;
 }
 

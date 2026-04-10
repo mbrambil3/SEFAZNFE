@@ -7,7 +7,8 @@
     "activeTab",
     "scripting",
     "clipboardWrite",
-    "webNavigation"
+    "webNavigation",
+    "storage"
   ],
   "host_permissions": [
     "https://nfe-extranet.sefazrs.rs.gov.br/*"

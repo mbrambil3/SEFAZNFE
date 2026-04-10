@@ -19,6 +19,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     case 'getTotalValue':
       getTotalValue().then(sendResponse);
       return true;
+      
+    case 'updateDate':
+      updateDate(request.dateText).then(sendResponse);
+      return true;
   }
 });
 
@@ -410,4 +414,84 @@ function parseValue(str) {
 
 function formatCurrency(value) {
   return value.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// Update date in Observação tab
+async function updateDate(dateText) {
+  try {
+    console.log('SEFAZ Editor - Updating date to:', dateText);
+    
+    // Look for the "Informações Complementares de interesse do Contribuinte" textarea
+    const textareas = document.querySelectorAll('textarea');
+    let targetTextarea = null;
+    
+    // Strategy 1: Find by looking at labels
+    const allTds = document.querySelectorAll('td');
+    for (const td of allTds) {
+      const text = td.textContent.trim();
+      if (text.includes('Complementares') && text.includes('Contribuinte')) {
+        // Find textarea in same row or nearby
+        const row = td.closest('tr');
+        if (row) {
+          const textarea = row.querySelector('textarea');
+          if (textarea) {
+            targetTextarea = textarea;
+            break;
+          }
+        }
+        // Check next row
+        const nextRow = row?.nextElementSibling;
+        if (nextRow) {
+          const textarea = nextRow.querySelector('textarea');
+          if (textarea) {
+            targetTextarea = textarea;
+            break;
+          }
+        }
+      }
+    }
+    
+    // Strategy 2: Find textarea that contains date pattern or is the second textarea
+    if (!targetTextarea) {
+      for (const textarea of textareas) {
+        if (textarea.value && textarea.value.match(/De \d{2}\/\d{2} a \d{2}\/\d{2}/)) {
+          targetTextarea = textarea;
+          break;
+        }
+      }
+    }
+    
+    // Strategy 3: Second textarea (usually the complementares field)
+    if (!targetTextarea && textareas.length >= 2) {
+      targetTextarea = textareas[1];
+    }
+    
+    // Strategy 4: Last textarea
+    if (!targetTextarea && textareas.length > 0) {
+      targetTextarea = textareas[textareas.length - 1];
+    }
+    
+    if (targetTextarea) {
+      console.log('SEFAZ Editor - Found textarea, current value:', targetTextarea.value?.substring(0, 50));
+      
+      // Update the textarea value
+      targetTextarea.focus();
+      targetTextarea.value = dateText;
+      
+      // Trigger events
+      targetTextarea.dispatchEvent(new Event('input', { bubbles: true }));
+      targetTextarea.dispatchEvent(new Event('change', { bubbles: true }));
+      targetTextarea.dispatchEvent(new Event('blur', { bubbles: true }));
+      
+      console.log('SEFAZ Editor - Date updated to:', dateText);
+      return { success: true };
+    } else {
+      console.log('SEFAZ Editor - Textarea not found');
+      return { success: false, error: 'Campo de observação não encontrado' };
+    }
+    
+  } catch (error) {
+    console.error('SEFAZ Editor - Error updating date:', error);
+    return { success: false, error: error.message };
+  }
 }

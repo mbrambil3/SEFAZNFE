@@ -6,7 +6,11 @@ const productsLoading = document.getElementById('productsLoading');
 const productsEmpty = document.getElementById('productsEmpty');
 const productsList = document.getElementById('productsList');
 const refreshProducts = document.getElementById('refreshProducts');
+const dateStart = document.getElementById('dateStart');
+const dateEnd = document.getElementById('dateEnd');
+const datePreview = document.getElementById('datePreview');
 const executeBtn = document.getElementById('executeBtn');
+const clearBtn = document.getElementById('clearBtn');
 const progressContainer = document.getElementById('progressContainer');
 const progressFill = document.getElementById('progressFill');
 const progressText = document.getElementById('progressText');
@@ -16,17 +20,65 @@ const copyTotalBtn = document.getElementById('copyTotalBtn');
 
 // State
 let products = [];
+let savedState = {};
 let isConnected = false;
 let currentTabId = null;
-let productsFrameId = null; // Store the frame ID where products were found
+let productsFrameId = null;
+
+// Storage key based on tab URL
+function getStorageKey() {
+  return 'sefaz_editor_state';
+}
+
+// Save state to storage
+async function saveState() {
+  const state = {
+    products: products.map(p => ({
+      code: p.code,
+      description: p.description,
+      newQty: p.newQty || '',
+      completed: p.completed || false
+    })),
+    dateStart: dateStart.value,
+    dateEnd: dateEnd.value,
+    timestamp: Date.now()
+  };
+  
+  await chrome.storage.local.set({ [getStorageKey()]: state });
+  console.log('State saved:', state);
+}
+
+// Load state from storage
+async function loadState() {
+  const result = await chrome.storage.local.get(getStorageKey());
+  savedState = result[getStorageKey()] || {};
+  console.log('State loaded:', savedState);
+  return savedState;
+}
+
+// Clear state
+async function clearState() {
+  await chrome.storage.local.remove(getStorageKey());
+  savedState = {};
+  dateStart.value = '';
+  dateEnd.value = '';
+  updateDatePreview();
+  products.forEach(p => {
+    p.newQty = '';
+    p.completed = false;
+  });
+  renderProducts();
+  updateExecuteButton();
+}
 
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
+  await loadState();
   await checkConnection();
   setupEventListeners();
 });
 
-// Check if we're on the correct page
+// Check connection
 async function checkConnection() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -41,12 +93,11 @@ async function checkConnection() {
       setConnected(false);
     }
   } catch (error) {
-    console.error('Error checking connection:', error);
+    console.error('Error:', error);
     setConnected(false);
   }
 }
 
-// Update connection status UI
 function setConnected(connected) {
   isConnected = connected;
   const statusText = statusBadge.querySelector('.status-text');
@@ -54,59 +105,57 @@ function setConnected(connected) {
   if (connected) {
     statusBadge.classList.add('connected');
     statusBadge.classList.remove('disconnected');
-    statusText.textContent = 'Conectado';
+    statusText.textContent = 'OK';
     warningBox.style.display = 'none';
     mainContent.style.display = 'flex';
   } else {
     statusBadge.classList.add('disconnected');
     statusBadge.classList.remove('connected');
-    statusText.textContent = 'Desconectado';
-    warningBox.style.display = 'flex';
+    statusText.textContent = 'OFF';
+    warningBox.style.display = 'block';
     mainContent.style.opacity = '0.5';
     mainContent.style.pointerEvents = 'none';
   }
 }
 
-// Load products from the page (handles iframes)
+// Load products
 async function loadProducts() {
   productsLoading.style.display = 'flex';
   productsEmpty.style.display = 'none';
   productsList.style.display = 'none';
-  productsFrameId = null;
   
   try {
     const frames = await chrome.webNavigation.getAllFrames({ tabId: currentTabId });
     let allProducts = [];
     
-    console.log('Searching for products in', frames?.length || 0, 'frames');
-    
-    if (frames && frames.length > 0) {
+    if (frames) {
       for (const frame of frames) {
         try {
-          console.log('Checking frame:', frame.frameId, frame.url);
           const response = await chrome.tabs.sendMessage(currentTabId, { action: 'getProducts' }, { frameId: frame.frameId });
-          console.log('Frame', frame.frameId, 'response:', response?.products?.length || 0, 'products');
-          
-          if (response && response.products && response.products.length > 0) {
+          if (response?.products?.length > 0) {
             allProducts = response.products;
-            productsFrameId = frame.frameId; // Save the frame ID where products were found!
-            console.log('Products found in frame:', productsFrameId);
-            break; // Stop searching once we find products
+            productsFrameId = frame.frameId;
+            break;
           }
-        } catch (e) {
-          console.log('Frame', frame.frameId, 'error:', e.message);
-        }
+        } catch (e) {}
       }
     }
     
     if (allProducts.length > 0) {
-      const seen = new Set();
-      products = allProducts.filter(p => {
-        if (seen.has(p.code)) return false;
-        seen.add(p.code);
-        return true;
+      // Merge with saved state
+      products = allProducts.map(p => {
+        const saved = savedState.products?.find(sp => sp.code === p.code);
+        return {
+          ...p,
+          newQty: saved?.newQty || '',
+          completed: saved?.completed || false
+        };
       });
-      products.forEach((p, i) => p.index = i);
+      
+      // Restore dates
+      if (savedState.dateStart) dateStart.value = savedState.dateStart;
+      if (savedState.dateEnd) dateEnd.value = savedState.dateEnd;
+      updateDatePreview();
       
       renderProducts();
       productsLoading.style.display = 'none';
@@ -122,27 +171,22 @@ async function loadProducts() {
   }
 }
 
-// Render products list
+// Render products
 function renderProducts() {
   productsList.innerHTML = '';
   
   products.forEach((product, index) => {
     const item = document.createElement('div');
-    item.className = 'product-item';
+    item.className = 'product-item' + (product.completed ? ' completed' : '');
+    
+    const inputClass = product.newQty ? 'product-qty-input filled' : 'product-qty-input';
     
     item.innerHTML = `
       <div class="product-info">
-        <div class="product-name" title="${product.description}">${product.description}</div>
+        <div class="product-name">${product.description}</div>
         <div class="product-details">Cód: ${product.code} | V.U: ${product.unitValue || '-'}</div>
       </div>
-      <input 
-        type="text" 
-        class="product-qty-input" 
-        data-index="${index}"
-        placeholder="Qtd"
-        value="${product.newQty || ''}"
-        data-testid="product-qty-input-${index}"
-      >
+      <input type="text" class="${inputClass}" data-index="${index}" placeholder="Qtd" value="${product.newQty || ''}" ${product.completed ? 'disabled' : ''}>
     `;
     
     productsList.appendChild(item);
@@ -150,6 +194,7 @@ function renderProducts() {
   
   document.querySelectorAll('.product-qty-input').forEach(input => {
     input.addEventListener('input', handleQtyInput);
+    input.addEventListener('change', () => saveState());
   });
   
   updateExecuteButton();
@@ -161,135 +206,156 @@ function handleQtyInput(e) {
   const value = e.target.value.replace(/[^\d,\.]/g, '');
   e.target.value = value;
   products[index].newQty = value;
+  
+  if (value) {
+    e.target.classList.add('filled');
+  } else {
+    e.target.classList.remove('filled');
+  }
+  
   updateExecuteButton();
 }
 
-// Update execute button state
-function updateExecuteButton() {
-  const hasQuantities = products.some(p => p.newQty && p.newQty.length > 0);
-  executeBtn.disabled = !hasQuantities;
-}
-
-// Send message to the products frame specifically
-async function sendToProductsFrame(message) {
-  if (productsFrameId !== null) {
-    console.log('Sending to products frame:', productsFrameId, message.action);
-    return await chrome.tabs.sendMessage(currentTabId, message, { frameId: productsFrameId });
-  } else {
-    // Fallback: try all frames
-    const frames = await chrome.webNavigation.getAllFrames({ tabId: currentTabId });
-    for (const frame of frames) {
-      try {
-        const response = await chrome.tabs.sendMessage(currentTabId, message, { frameId: frame.frameId });
-        if (response && response.success) {
-          return response;
-        }
-      } catch (e) {
-        // Continue
-      }
-    }
-    throw new Error('Não foi possível comunicar com a página');
+// Date input handling
+function formatDateInput(input) {
+  let value = input.value.replace(/\D/g, '');
+  if (value.length >= 2) {
+    value = value.slice(0, 2) + '/' + value.slice(2, 4);
   }
+  input.value = value;
+  
+  if (value.length === 5) {
+    input.classList.add('filled');
+  } else {
+    input.classList.remove('filled');
+  }
+  
+  updateDatePreview();
+  saveState();
 }
 
-// Execute the automation (only product editing)
+function updateDatePreview() {
+  const start = dateStart.value || '__/__';
+  const end = dateEnd.value || '__/__';
+  datePreview.textContent = `De ${start} a ${end}`;
+}
+
+// Update execute button
+function updateExecuteButton() {
+  const hasQty = products.some(p => p.newQty && !p.completed);
+  const hasDates = dateStart.value.length === 5 && dateEnd.value.length === 5;
+  executeBtn.disabled = !hasQty && !hasDates;
+}
+
+// Send to products frame
+async function sendToFrame(message) {
+  if (productsFrameId !== null) {
+    return await chrome.tabs.sendMessage(currentTabId, message, { frameId: productsFrameId });
+  }
+  
+  const frames = await chrome.webNavigation.getAllFrames({ tabId: currentTabId });
+  for (const frame of frames) {
+    try {
+      const response = await chrome.tabs.sendMessage(currentTabId, message, { frameId: frame.frameId });
+      if (response?.success) return response;
+    } catch (e) {}
+  }
+  throw new Error('Comunicação falhou');
+}
+
+// Execute automation
 async function executeAutomation() {
   if (!isConnected) return;
   
   executeBtn.disabled = true;
   progressContainer.style.display = 'block';
   progressFill.style.width = '0%';
-  progressText.textContent = 'Iniciando...';
   
-  const productsToEdit = products.filter(p => p.newQty && p.newQty.length > 0);
-  const totalSteps = productsToEdit.length;
+  const productsToEdit = products.filter(p => p.newQty && !p.completed);
+  const hasDateChange = dateStart.value.length === 5 && dateEnd.value.length === 5;
+  const totalSteps = productsToEdit.length + (hasDateChange ? 1 : 0);
   let currentStep = 0;
-  let hasError = false;
   
   try {
-    // Edit each product
+    // Edit products
     for (const product of productsToEdit) {
       progressText.textContent = `Editando: ${product.description}...`;
-      console.log('Editing product:', product.code, product.description, 'new qty:', product.newQty);
+      progressText.textContent += ' (Abra o painel do produto)';
       
-      const result = await sendToProductsFrame({
+      const result = await sendToFrame({
         action: 'editProduct',
-        productCode: product.code, // Send code instead of index for more reliable matching
-        productIndex: product.index,
+        productCode: product.code,
         newQty: product.newQty
       });
       
-      console.log('Edit result:', result);
-      
-      if (!result || !result.success) {
-        progressText.textContent = `Erro: ${result?.error || 'Falha ao editar produto'}`;
-        hasError = true;
-        break;
+      if (result?.success) {
+        product.completed = true;
+        currentStep++;
+        progressFill.style.width = `${(currentStep / totalSteps) * 100}%`;
+        await saveState();
+        renderProducts();
+        await new Promise(r => setTimeout(r, 1000));
+      } else {
+        progressText.textContent = `Erro: ${result?.error || 'Falha'}. Abra o produto manualmente.`;
+        await saveState();
+        executeBtn.disabled = false;
+        return;
       }
+    }
+    
+    // Update date (last step)
+    if (hasDateChange) {
+      progressText.textContent = 'Atualizando data...';
+      const dateText = `De ${dateStart.value} a ${dateEnd.value}`;
+      
+      const result = await sendToFrame({
+        action: 'updateDate',
+        dateText: dateText
+      });
       
       currentStep++;
-      progressFill.style.width = `${(currentStep / totalSteps) * 100}%`;
-      
-      // Delay between products
-      await new Promise(resolve => setTimeout(resolve, 1500));
-    }
-    
-    if (!hasError) {
-      // Get total value
-      progressText.textContent = 'Calculando valor total...';
-      const response = await sendToProductsFrame({ action: 'getTotalValue' });
-      
       progressFill.style.width = '100%';
-      progressText.textContent = 'Concluído!';
       
-      setTimeout(() => {
-        resultSection.style.display = 'block';
-        totalValue.textContent = `R$ ${response?.totalValue || '0,00'}`;
-        progressContainer.style.display = 'none';
-      }, 500);
+      if (!result?.success) {
+        progressText.textContent = 'Erro ao atualizar data. Faça manualmente na aba Observação.';
+      }
     }
     
-    executeBtn.disabled = false;
+    // Get total
+    progressText.textContent = 'Calculando total...';
+    const totalResult = await sendToFrame({ action: 'getTotalValue' });
     
-  } catch (error) {
-    console.error('Error during automation:', error);
-    progressText.textContent = `Erro: ${error.message}`;
-    progressFill.style.background = 'var(--accent-error)';
-    executeBtn.disabled = false;
-  }
-}
-
-// Copy total value to clipboard
-async function copyTotal() {
-  const value = totalValue.textContent;
-  
-  try {
-    await navigator.clipboard.writeText(value);
-    copyTotalBtn.classList.add('copied');
-    copyTotalBtn.innerHTML = `
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M5 13L9 17L19 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-      </svg>
-      Copiado!
-    `;
+    progressText.textContent = 'Concluído!';
     
     setTimeout(() => {
-      copyTotalBtn.classList.remove('copied');
-      copyTotalBtn.innerHTML = `
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M8 5H6C4.89543 5 4 5.89543 4 7V19C4 20.1046 4.89543 21 6 21H16C17.1046 21 18 20.1046 18 19V18M8 5C8 6.10457 8.89543 7 10 7H12C13.1046 7 14 6.10457 14 5M8 5C8 3.89543 8.89543 3 10 3H12C13.1046 3 14 3.89543 14 5M14 5H16C17.1046 5 18 5.89543 18 7V10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        Copiar Valor
-      `;
-    }, 2000);
+      resultSection.style.display = 'block';
+      totalValue.textContent = `R$ ${totalResult?.totalValue || '0,00'}`;
+      progressContainer.style.display = 'none';
+    }, 500);
+    
   } catch (error) {
-    console.error('Failed to copy:', error);
+    console.error('Error:', error);
+    progressText.textContent = `Erro: ${error.message}`;
   }
+  
+  executeBtn.disabled = false;
+  await saveState();
+}
+
+// Copy total
+async function copyTotal() {
+  const value = totalValue.textContent;
+  await navigator.clipboard.writeText(value);
+  copyTotalBtn.textContent = 'Copiado!';
+  setTimeout(() => { copyTotalBtn.textContent = 'Copiar'; }, 1500);
 }
 
 // Setup event listeners
 function setupEventListeners() {
   refreshProducts.addEventListener('click', loadProducts);
+  dateStart.addEventListener('input', () => formatDateInput(dateStart));
+  dateEnd.addEventListener('input', () => formatDateInput(dateEnd));
   executeBtn.addEventListener('click', executeAutomation);
+  clearBtn.addEventListener('click', clearState);
   copyTotalBtn.addEventListener('click', copyTotal);
 }

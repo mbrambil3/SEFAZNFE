@@ -6,7 +6,8 @@
   "permissions": [
     "activeTab",
     "scripting",
-    "clipboardWrite"
+    "clipboardWrite",
+    "webNavigation"
   ],
   "host_permissions": [
     "https://nfe-extranet.sefazrs.rs.gov.br/*"
@@ -30,7 +31,9 @@
     {
       "matches": ["https://nfe-extranet.sefazrs.rs.gov.br/*"],
       "js": ["content.js"],
-      "css": ["content-styles.css"]
+      "css": ["content-styles.css"],
+      "all_frames": true,
+      "run_at": "document_end"
     }
   ]
 }

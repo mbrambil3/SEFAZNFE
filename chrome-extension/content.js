@@ -1,11 +1,20 @@
 // Content script for SEFAZ NF-e Editor
-// This script runs in the context of the SEFAZ website
+// This script runs in the context of the SEFAZ website (including iframes)
+
+// Flag to identify if this frame has products
+let hasProducts = false;
+let cachedProducts = [];
 
 // Listen for messages from the popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  console.log('SEFAZ Editor - Message received:', request.action, 'in frame:', window.location.href);
+  
   switch (request.action) {
     case 'getProducts':
-      getProducts().then(sendResponse);
+      getProducts().then(result => {
+        console.log('SEFAZ Editor - Sending products:', result);
+        sendResponse(result);
+      });
       return true; // Indicates async response
       
     case 'updateDateRange':
@@ -19,8 +28,30 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     case 'getTotalValue':
       getTotalValue().then(sendResponse);
       return true;
+      
+    case 'ping':
+      // Simple ping to check if content script is loaded
+      sendResponse({ success: true, hasProducts: hasProducts, url: window.location.href });
+      return true;
   }
 });
+
+// Auto-detect products on page load
+setTimeout(() => {
+  detectProductsInFrame();
+}, 1000);
+
+// Detect if this frame contains products
+async function detectProductsInFrame() {
+  console.log('SEFAZ Editor - Auto-detecting products in frame:', window.location.href);
+  
+  const result = await getProducts();
+  if (result.products && result.products.length > 0) {
+    hasProducts = true;
+    cachedProducts = result.products;
+    console.log('SEFAZ Editor - This frame has products:', result.products.length);
+  }
+}
 
 // Get products from the "Produtos e Serviços" table
 async function getProducts() {

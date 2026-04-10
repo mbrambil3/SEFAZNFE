@@ -69,17 +69,60 @@ function setConnected(connected) {
   }
 }
 
-// Load products from the page
+// Load products from the page (handles iframes)
 async function loadProducts() {
   productsLoading.style.display = 'flex';
   productsEmpty.style.display = 'none';
   productsList.style.display = 'none';
   
   try {
-    const response = await chrome.tabs.sendMessage(currentTabId, { action: 'getProducts' });
+    // Get all frames in the tab
+    const frames = await chrome.webNavigation.getAllFrames({ tabId: currentTabId });
+    console.log('Found frames:', frames?.length || 0);
     
-    if (response && response.products && response.products.length > 0) {
-      products = response.products;
+    let allProducts = [];
+    
+    // Try to get products from each frame
+    if (frames && frames.length > 0) {
+      for (const frame of frames) {
+        try {
+          const response = await chrome.tabs.sendMessage(currentTabId, { action: 'getProducts' }, { frameId: frame.frameId });
+          console.log('Frame', frame.frameId, 'response:', response);
+          
+          if (response && response.products && response.products.length > 0) {
+            allProducts = [...allProducts, ...response.products];
+          }
+        } catch (e) {
+          // Frame might not have content script or be inaccessible
+          console.log('Frame', frame.frameId, 'error:', e.message);
+        }
+      }
+    }
+    
+    // Fallback: try sending to main frame only
+    if (allProducts.length === 0) {
+      try {
+        const response = await chrome.tabs.sendMessage(currentTabId, { action: 'getProducts' });
+        if (response && response.products && response.products.length > 0) {
+          allProducts = response.products;
+        }
+      } catch (e) {
+        console.log('Main frame error:', e.message);
+      }
+    }
+    
+    if (allProducts.length > 0) {
+      // Remove duplicates based on code
+      const seen = new Set();
+      products = allProducts.filter(p => {
+        if (seen.has(p.code)) return false;
+        seen.add(p.code);
+        return true;
+      });
+      
+      // Re-index products
+      products.forEach((p, i) => p.index = i);
+      
       renderProducts();
       productsLoading.style.display = 'none';
       productsList.style.display = 'flex';
@@ -166,6 +209,30 @@ function updateExecuteButton() {
   executeBtn.disabled = !hasValidDates || !hasQuantities;
 }
 
+// Helper function to send message to all frames
+async function sendMessageToAllFrames(message) {
+  try {
+    const frames = await chrome.webNavigation.getAllFrames({ tabId: currentTabId });
+    
+    for (const frame of frames) {
+      try {
+        const response = await chrome.tabs.sendMessage(currentTabId, message, { frameId: frame.frameId });
+        if (response && response.success) {
+          return response;
+        }
+      } catch (e) {
+        // Continue to next frame
+      }
+    }
+    
+    // Fallback to main frame
+    return await chrome.tabs.sendMessage(currentTabId, message);
+  } catch (error) {
+    console.error('Error sending message to frames:', error);
+    throw error;
+  }
+}
+
 // Execute the automation
 async function executeAutomation() {
   if (!isConnected) return;
@@ -183,7 +250,7 @@ async function executeAutomation() {
   try {
     // Step 1: Update date range in Observação tab
     progressText.textContent = 'Atualizando intervalo de datas...';
-    await chrome.tabs.sendMessage(currentTabId, { 
+    await sendMessageToAllFrames({ 
       action: 'updateDateRange', 
       dateRange: dateRange 
     });
@@ -194,7 +261,7 @@ async function executeAutomation() {
     for (const product of productsToEdit) {
       progressText.textContent = `Editando: ${product.description}...`;
       
-      await chrome.tabs.sendMessage(currentTabId, {
+      await sendMessageToAllFrames({
         action: 'editProduct',
         productIndex: product.index,
         newQty: product.newQty
@@ -209,7 +276,7 @@ async function executeAutomation() {
     
     // Step 3: Get total value
     progressText.textContent = 'Calculando valor total...';
-    const response = await chrome.tabs.sendMessage(currentTabId, { action: 'getTotalValue' });
+    const response = await sendMessageToAllFrames({ action: 'getTotalValue' });
     
     progressFill.style.width = '100%';
     progressText.textContent = 'Concluído!';
